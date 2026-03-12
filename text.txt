@@ -1,0 +1,489 @@
+
+ // async function executeAnalytics(intent, userLgd) {
+//     const indicatorMeta = INDICATORS[intent.indicator];
+//     const model = db[indicatorMeta.table];
+//     try {
+//         if (!model) {
+//             throw new Error(`Model ${indicatorMeta.table} not found`);
+//         }
+//         //previous 
+//         const whereClause = {
+//             state_lgd_code: String(userLgd)
+//         };
+//         let cropSet = [];
+//         let seasonSet = [];
+//         let yearSet = String(intent.filter.year);
+
+//         if (intent.filter.crop) {
+//             const crops = Array.isArray(intent.filter.crop)
+//                 ? intent.filter.crop
+//                 : [intent.filter.crop];
+
+//             cropSet = crops.map(c => c.toLowerCase());
+//         }
+
+//         if (intent.filter.season) {
+//             const seasons = Array.isArray(intent.filter.season)
+//                 ? intent.filter.season
+//                 : [intent.filter.season];
+
+//             seasonSet = seasons.map(c => c.toLowerCase());
+
+//         }
+//         const andConditions = [];
+//         // Crop filter
+//         if (cropSet.length > 0) {
+//             andConditions.push({
+//                 [Sequelize.Op.or]: cropSet.map(crop => ({
+//                     crop_name_eng: {
+//                         [Sequelize.Op.iLike]: `%${crop}%`
+//                     }
+//                 }))
+//             });
+//         }
+
+//         // Season filter
+//         if (seasonSet.length > 0) {
+//             andConditions.push({
+//                 [Sequelize.Op.or]: seasonSet.map(season => ({
+//                     season: {
+//                         [Sequelize.Op.iLike]: `%${season}%`
+//                     }
+//                 }))
+//             });
+//         }
+
+//         // Only attach AND if conditions exist
+//         if (andConditions.length > 0) {
+//             whereClause[Sequelize.Op.and] = andConditions;
+//         }
+
+//         let data = await loadData(indicatorMeta.table, {
+//             andConditions
+//             // limit: 1000000
+//         });
+//         console.log("step 1.........", intent, data.length, data[1]);
+
+//         if (intent.dimension) {
+//             console.log("step 2.........", data.length, intent.dimension);
+//             return groupedResult(data, intent, indicatorMeta);
+//         }
+//         console.log("step 3.........", indicatorMeta);
+//         return summaryResult(data, indicatorMeta);
+
+//     } catch (error) {
+//         console.log("here is the error in analytics", error);
+//         return {
+//             title: "Error",
+//             chart_data: { type: "message", labels: [], values: [], unit: "" },
+//             narration: `Sorry, I couldn't process your request: ${error.message}`,
+//             metadata: { error: true }
+//         };
+//     }
+
+// }
+ 
+ 
+ 
+ 
+ 
+ //csv data
+    // if (cache[name]) return cache[name];
+    // return new Promise((resolve) => {
+    //     const rows = [];
+    //     fs.createReadStream(`./data/${name}.csv`)
+    //         .pipe(csv())
+    //         .on("data", row => rows.push(row))
+    //         .on("end", () => {
+    //             cache[name] = rows;
+    //             resolve(rows);
+    //         });
+    // });
+
+
+
+
+const { INDICATORS, MAHARASHTRA_DISTRICTS } = require("../utils/config");
+const { default: db } = require("../models");
+const { Sequelize } = require("sequelize");
+
+const cache = {};
+
+async function loadCSV(modelName, options = {}) {
+    console.log("name........", modelName);
+    if (cache[modelName]) {
+        return cache[modelName];
+    }
+
+    const model = db[modelName];
+
+    if (!model) {
+        throw new Error(`Model '${modelName}' not found`);
+    }
+    console.log("model name 2........", model);
+    const rows = await model.findAll({
+        ...options,
+        raw: true
+    });
+
+    console.log("model name........", rows);
+    cache[modelName] = rows;
+    return rows;
+    //csv data
+    // if (cache[name]) return cache[name];
+    // return new Promise((resolve) => {
+    //     const rows = [];
+    //     fs.createReadStream(`./data/${name}.csv`)
+    //         .pipe(csv())
+    //         .on("data", row => rows.push(row))
+    //         .on("end", () => {
+    //             cache[name] = rows;
+    //             resolve(rows);
+    //         });
+    // });
+}
+
+
+async function executeAnalytics(intent, userLgd) {
+    const indicatorMeta = INDICATORS[intent.indicator];
+    const model = db[indicatorMeta.table];
+    try {
+        if (!model) {
+            throw new Error(`Model ${indicatorMeta.table} not found`);
+        }
+
+        const whereClause = {
+            state_lgd_code: String(userLgd)
+        };
+
+        // 🔎 Crop Filter
+        if (intent.filter.crop) {
+            const crops = Array.isArray(intent.filter.crop)
+                ? intent.filter.crop
+                : [intent.filter.crop];
+
+            whereClause.crop_name_eng = {
+                [Sequelize.Op.iLike]: `%${crops[0]}%`
+            };
+        }
+
+        // 🔎 Season Filter
+        if (intent.filter.season) {
+            const seasons = Array.isArray(intent.filter.season)
+                ? intent.filter.season
+                : [intent.filter.season];
+
+            whereClause.season = {
+                [Sequelize.Op.iLike]: `%${seasons[0]}%`
+            };
+        }
+
+        // 🔎 Year Filter
+        if (intent.filter.year) {
+            whereClause.year = String(intent.filter.year);
+        }
+
+        // 🔥 If GROUP BY Required
+        if (intent.dimension) {
+
+            const dimensionColumnMap = {
+                district: "district_lgd_code",
+                crop: "crop_name_eng",
+                season: "season",
+                year: "year"
+            };
+
+            const groupColumn = dimensionColumnMap[intent.dimension];
+
+            if (!groupColumn) {
+                throw new Error(`Unsupported dimension: ${intent.dimension}`);
+            }
+
+            const result = await model.findAll({
+                attributes: [
+                    groupColumn,
+                    [
+                        Sequelize.fn(
+                            "SUM",
+                            Sequelize.cast(
+                                Sequelize.col(indicatorMeta.column),
+                                "DOUBLE PRECISION"
+                            )
+                        ),
+                        "total"
+                    ]
+                ],
+                where: whereClause,
+                group: [groupColumn],
+                order: [[Sequelize.literal("total"), "DESC"]],
+                limit: intent.top_n || 10,
+                raw: true
+            });
+
+            return formatGroupedResult(result, intent, indicatorMeta);
+        }
+
+
+        /* =========================
+          3️⃣ SUMMARY RESULT (KPI)
+       ========================== */
+
+        const result = await model.findAll({
+            attributes: [
+                [
+                    Sequelize.fn(
+                        "SUM",
+                        Sequelize.col(indicatorMeta.column)
+                    ),
+                    "total"
+                ]
+            ],
+            where: whereClause,
+            raw: true
+        });
+
+        const total = Number(result[0]?.total || 0);
+
+        return {
+            title: indicatorMeta.title || "Summary",
+            indicator: indicatorMeta.key,
+            chart_type: "kpi",
+            labels: ["Total"],
+            values: [Number(total.toFixed(2))],
+            unit: indicatorMeta.unit || "",
+            record_count: 1,
+            data_query: "DB SUM Aggregation"
+        };
+    } catch (error) {
+        console.log("here is the error in analytics", error);
+        return {
+            title: "Error",
+            chart_data: { type: "message", labels: [], values: [], unit: "" },
+            narration: `Sorry, I couldn't process your request: ${error.message}`,
+            metadata: { error: true }
+        };
+    }
+
+
+    // let data = await loadCSV(indicatorMeta.table);
+    // data = data.filter(d => String(d.state_lgd_code) === String(userLgd));
+    // console.log("step 1.........", intent, data.length, data[1]);
+
+    // if (intent.filter.crop) {
+    //     const crops = Array.isArray(intent.filter.crop)
+    //         ? intent.filter.crop
+    //         : [intent.filter.crop];
+
+    //     const cropSet = crops.map(c => c.toLowerCase());
+
+    //     data = data.filter(d =>
+    //         cropSet.some(crop =>
+    //             d.crop_name_eng?.toLowerCase().includes(crop)
+    //         )
+    //     );
+    // }
+
+    // if (intent.filter.season) {
+    //     const seasons = Array.isArray(intent.filter.season)
+    //         ? intent.filter.season
+    //         : [intent.filter.season];
+
+    //     const seasonSet = seasons.map(c => c.toLowerCase());
+
+    //     data = data.filter(d =>
+    //         seasonSet.some(sea =>
+    //             d.season?.toLowerCase().includes(sea)
+    //         )
+    //     );
+    // }
+
+    // if (intent.filter.year) {
+    //     data = data.filter(d => String(d.year) === String(intent.filter.year));
+    // }
+
+    // if (intent.dimension) {
+    //     console.log("step 2.........", data.length, intent.dimension);
+    //     return groupedResult(data, intent, indicatorMeta);
+    // }
+    // console.log("step 3.........", indicatorMeta);
+    // return summaryResult(data, indicatorMeta);
+}
+
+/* ======================================
+   SUMMARY RESULT (KPI)
+====================================== */
+
+function summaryResult(data, indicatorMeta) {
+    const valueField = indicatorMeta.column;
+
+    let total = 0;
+    let count = 0;
+    console.log("enter into the summary", data[0], indicatorMeta)
+    for (const row of data) {
+        const val = Number(row[valueField]);
+        if (!isNaN(val)) {
+            total += val;
+            count++;
+        }
+    }
+
+    return {
+        title: indicatorMeta.title || "Summary",
+        indicator: indicatorMeta.unit,
+        chart_type: "kpi",
+        labels: ["Total"],
+        values: [Number(total.toFixed(2))],
+        unit: indicatorMeta.unit || "",
+        record_count: count,
+        data_query: `SUM(${valueField})`
+    };
+}
+
+/* ======================================
+   GROUPED RESULT (BAR / PIE)
+====================================== */
+
+function groupedResult(data, intent, indicatorMeta) {
+    const valueField = indicatorMeta.column;
+    const dimension = intent.dimension;
+    console.log("group data.......", valueField, dimension)
+    // Map NLP dimension → CSV column
+    const dimensionColumnMap = {
+        district: "district_lgd_code",
+        crop: "crop_name_eng",
+        season: "season",
+        year: "year"
+    };
+
+    const groupByColumn = dimensionColumnMap[dimension];
+    console.log("groupByColumn data.......", groupByColumn)
+
+    if (!groupByColumn) {
+        throw new Error(`Unsupported dimension: ${dimension}`);
+    }
+
+    // 🔥 Convert LGD → Name
+    const DISTRICT_MASTER = MAHARASHTRA_DISTRICTS.reduce((acc, d) => {
+        acc[d.lgd_code] = d.name;
+        return acc;
+    }, {});
+
+    const grouped = {};
+
+    // ---- Group & Sum ----
+    for (const row of data) {
+        let key = row[groupByColumn] || "Unknown";
+
+        // 🔥 Convert LGD → District Name
+        if (dimension === "district") {
+            key = DISTRICT_MASTER[String(key)] || `District ${key}`;
+        }
+
+        const val = Number(row[valueField]) || 0;
+        console.log("key data.......", key, val)
+
+        if (!grouped[key]) {
+            grouped[key] = 0;
+        }
+        grouped[key] += val;
+    }
+    console.log("grouped data.......", grouped)
+    // ---- Convert to arrays ----
+    let labels = Object.keys(grouped);
+    let values = Object.values(grouped);
+
+    // ---- Sort DESC ----
+    const sorted = labels
+        .map((label, i) => ({ label, value: values[i] }))
+        .sort((a, b) => b.value - a.value);
+    console.log("sorted data.......", sorted)
+    // ---- Apply TOP N ----
+    const topN = intent.top_n || 10;
+    const sliced = sorted.slice(0, topN);
+
+    labels = sliced.map(i => i.label);
+    values = sliced.map(i => Number(i.value.toFixed(2)));
+
+    // ---- Percentage calculation (for pie charts) ----
+    const total = values.reduce((a, b) => a + b, 0);
+    const percentages = total
+        ? values.map(v => Number(((v / total) * 100).toFixed(2)))
+        : [];
+
+    return {
+        title: `${indicatorMeta.title} by ${dimension}`,
+        indicator: indicatorMeta.key,
+        chart_type: dimension === "crop" ? "bar" : "pie",
+        labels,
+        values,
+        percentages,
+        unit: indicatorMeta.unit || "",
+        record_count: data.length,
+        data_query: `GROUP BY ${groupByColumn} → SUM(${valueField})`
+    };
+}
+
+function formatGroupedResult(data, intent, indicatorMeta) {
+
+    const labels = data.map(d =>
+        d[intent.dimension === "district"
+            ? "district_lgd_code"
+            : intent.dimension]
+    );
+    console.log("group data.......", data.length, indicatorMeta, intent)
+    const values = data.map(d => Number(d.total));
+
+    const total = values.reduce((a, b) => a + b, 0);
+
+    const percentages = total
+        ? values.map(v => Number(((v / total) * 100).toFixed(2)))
+        : [];
+
+    const chartType = determineChartType({
+        intent,
+        dataLength: data.length
+    });
+
+    return {
+        title: `${indicatorMeta.title} by ${intent.dimension}`,
+        indicator: indicatorMeta.key,
+        chart_type: chartType,
+        labels,
+        values,
+        percentages,
+        unit: indicatorMeta.unit || "",
+        record_count: data.length,
+        data_query: "DB GROUP BY Aggregation"
+    };
+}
+
+function determineChartType({ intent, dataLength }) {
+
+    // 1️⃣ No dimension → KPI
+    if (!intent.dimension) return "kpi";
+
+    // 2️⃣ If only one record → KPI
+    if (dataLength === 1) return "pie";
+
+    // 3️⃣ Time series → Line chart
+    if (intent.dimension === "year") return "line";
+
+    // 4️⃣ Crop distribution
+    if (intent.dimension === "crop") {
+        if (dataLength <= 6) return "pie";
+        return "bar";
+    }
+
+    // 5️⃣ District comparison
+    if (intent.dimension === "district") {
+        if (dataLength > 15) return "horizontal_bar";
+        return "bar";
+    }
+
+    // 6️⃣ Default fallback
+    return "bar";
+}
+
+
+
+module.exports = { executeAnalytics };

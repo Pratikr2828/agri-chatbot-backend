@@ -1,0 +1,34 @@
+# Node.js Ollama Integration Requirements
+
+## System Requirements
+- Node.js: v14 or higher
+- Ollama: Latest version (https://ollama.ai)
+
+## Installation Steps
+1. Install Node.js from https://nodejs.org/
+2. Install Ollama from https://ollama.ai/download
+3. Pull a model: ollama pull llama3
+4. Start Ollama: ollama serve
+
+## Usage
+Run the application:
+node index.js
+
+Or use the full path if node command is not working:
+"C:\Program Files\nodejs\node.exe" index.js
+
+## Supported Models
+- llama3
+- llama2
+- apigee-assistant
+- Or any other model you install with: ollama pull <model-name>
+
+## Notes
+- Ensure Ollama is running before starting the Node.js application
+- The application will automatically detect available models
+- Default model used: llama3 (can be changed in index.js)
+
+
+
+# ollama pull llama3   
+# ollama run llama3   

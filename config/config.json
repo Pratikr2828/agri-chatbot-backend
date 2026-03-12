@@ -1,0 +1,16 @@
+{
+    "mis_chatbot_db": {
+        "port": "5432",
+        "username": "postgres",
+        "password": "postgres",
+        "database": "postgres",
+        "host": "10.128.3.157",
+        "dialect": "postgres"
+    },
+    "redis_cache_db": {
+        "host": "127.0.0.1",
+        "port": 6379,
+        "password": "",
+        "user": ""
+    }
+}
