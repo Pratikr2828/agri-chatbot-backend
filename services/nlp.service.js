@@ -17,132 +17,48 @@ import district_lgd_data from "../models/district_lgd_data.js";
 import state_lgd_data from "../models/state_lgd_data.js";
 import { LGD_TO_STATE } from "../utils/lgdStateMap.js";
 
-
 const OLLAMA_URL = "http://localhost:11434/api/generate";
 const MODEL = "llama3";
 
-function detectIndicator(query) {
-
-    let bestIndicator = null;
-    let bestScore = 0;
-
-    for (const [indicatorKey, indicatorConfig] of Object.entries(INDICATORS)) {
-
-        let score = 0;
-
-        for (const keyword of indicatorConfig.keywords) {
-
-            const keywordLower = keyword.toLowerCase();
-
-            if (query.includes(keywordLower)) {
-
-                // Longer keywords get higher score
-                score += keywordLower.split(" ").length;
-
-            }
-
-        }
-
-        if (score > bestScore) {
-            bestScore = score;
-            bestIndicator = indicatorKey;
-        }
-
-    }
-
-    return bestIndicator;
-
-}
 function classifyIntent(query) {
-
     const q = query.toLowerCase().trim();
     const words = new Set(q.split(/\W+/));
 
-    // -----------------------------
-    // Conversation Detection
-    // -----------------------------
+    // ---- Conversation detection ----
     if (isGreeting(words)) {
-        return {
-            mode: "conversation",
-            sub_type: "greeting",
-            confidence: 0.9
-        };
+        return { mode: "conversation", sub_type: "greeting", confidence: 0.9, };
     }
 
     if (isHelpQuery(words)) {
-        return {
-            mode: "conversation",
-            sub_type: "help",
-            confidence: 0.9
-        };
+        return { mode: "conversation", sub_type: "help", confidence: 0.9, };
     }
 
-    // -----------------------------
-    // Analytics Detection
-    // -----------------------------
+    // ---- Analytics intent ----
     const indicator = detectIndicator(q);
     const dimension = detectDimension(q);
-
     let year_filter = detectYear(q);
-    const season_filter = detectSeason(q);
-    const crop_filter = detectCrop(q);
-
     const isNational = detectNationalScope(q);
-
-    // If dimension is year, remove year filter
     if (dimension === "year" && year_filter) {
         year_filter = null;
     }
 
-    // -----------------------------
-    // Top N Detection (optimized)
-    // -----------------------------
-    const detectedTop = detectTopN(q);
-
-    const top_n = dimension === "district"
-        ? (detectedTop || 5)
-        : detectedTop;
-
-    // -----------------------------
-    // Indicator Fallback
-    // -----------------------------
-    if (!indicator) {
-        return {
-            mode: "conversation",
-            sub_type: "fallback",
-            confidence: 0.3
-        };
-    }
-
-    // -----------------------------
-    // Final Intent Object
-    // -----------------------------
     return {
         mode: "analytics",
         indicator,
         dimension,
-
         filter: {
-            crop: crop_filter,
-            season: season_filter,
-            year: year_filter
+            crop: detectCrop(q),
+            season: detectSeason(q),
+            year: year_filter,
         },
-
         comparison_type: detectComparison(q),
-
-        top_n,
-
+        top_n: dimension == "district" && detectTopN(q) == null ? 5 : detectTopN(q),
         intent_type: dimension ? "distribution" : "summary",
-
         current_type: detectCurrentType(q),
-
         sorting_type: detectOrder(q),
-
+        confidence: indicator ? 0.9 : 0.3,
         scope: isNational ? "national" : "state",
-
-        confidence: 0.9
     };
-
 }
 
 function resolveImplicitContext(intent) {
@@ -329,75 +245,56 @@ function normalizeQuery(query) {
 
 function detectDimension(query) {
 
-    if (!query) return null;
+    const q = normalizeQuery(query);
 
-    const q = query.toLowerCase();
-
-    let bestDimension = null;
-    let bestScore = 0;
-
-    // -------------------------
-    // 1️⃣ Strong regex detection
-    // -------------------------
     const strongPatterns = {
-        district: /(by district|district-wise|districtwise|across districts|top districts|district comparison)/,
-        crop: /(by crop|crop-wise|cropwise|top crops|which crops|crop comparison)/,
-        year: /(by year|year-wise|yearwise|annual|year trend|year comparison)/,
-        season: /(by season|season-wise|seasonwise|season trend)/,
-        irrigation: /(by irrigation|irrigation-wise|water source|irrigation comparison)/,
-        village: /(by village|village-wise|villagewise|village comparison)/,
-        state: /(by state|state-wise|statewise|across states|state comparison)/
+        district: /\b(by district|district[-\s]?wise|across districts|top\s+\d+\s+districts?)\b/,
+        crop: /\b(by crop|crop[-\s]?wise|top\s+\d+\s+crops?|which crops?)\b/,
+        year: /\b(by year|year[-\s]?wise|annual|year trend|trend over years?)\b/,
+        season: /\b(by season|season[-\s]?wise|season trend)\b/,
+        irrigation: /\b(by irrigation|irrigation[-\s]?wise|water source|water source distribution)\b/,
+        village: /\b(by village|village[-\s]?wise|village comparison)\b/,
+        state: /\b(by state|state[-\s]?wise|across states|state comparison)\b/
     };
 
+    // 1️⃣ Strong regex detection
     for (const dim in strongPatterns) {
         if (strongPatterns[dim].test(q)) {
             return dim;
         }
     }
 
-    // -------------------------
-    // 2️⃣ Special pattern
-    // -------------------------
-    if (/top\s+\d+\s+crops?/.test(q)) {
-        return "crop";
-    }
+    // 2️⃣ Keyword scoring fallback
+    let bestDimension = null;
+    let bestScore = 0;
 
-    if (/top\s+\d+\s+districts?/.test(q)) {
-        return "district";
-    }
+    for (const dim in DIMENSIONS) {
 
-    // -------------------------
-    // 3️⃣ Keyword scoring
-    // -------------------------
-    for (const [dimensionKey, dimensionConfig] of Object.entries(DIMENSIONS)) {
+        const keywords = DIMENSIONS[dim]?.keywords || [];
 
         let score = 0;
 
-        for (const keyword of dimensionConfig.keywords) {
+        for (const kw of keywords) {
 
-            const keywordLower = keyword.toLowerCase();
+            const kwNorm = normalizeQuery(kw);
 
-            if (q.includes(keywordLower)) {
+            const pattern = new RegExp(`\\b${kwNorm}\\b`, "i");
 
-                // longer phrases get higher score
-                score += keywordLower.split(" ").length;
-
+            if (pattern.test(q)) {
+                score += kwNorm.split(" ").length;
             }
-
         }
 
         if (score > bestScore) {
             bestScore = score;
-            bestDimension = dimensionKey;
+            bestDimension = dim;
         }
-
     }
 
     return bestScore > 0 ? bestDimension : null;
-
 }
 
-
+// Example tests
 console.log(detectDimension("Show data by district")); // district
 console.log(detectDimension("Top 5 crops in 2025"));   // crop
 console.log(detectDimension("Trend over years"));      // year
@@ -412,51 +309,47 @@ function detectCrop(query) {
         words.includes(crop.toLowerCase())
     );
 
-    return crops.length > 0 ? crops : null;
-} 
+    return crops.length ? crops.map(c => c.toLowerCase()) : null;
+}
+
 function detectSeason(query) {
     if (!query) return null;
 
-    const cleanedQuery = basicClean(query); 
+    const words = query.toLowerCase().split(/\W+/);
 
-    // Check for direct matches or common typos
-    for (const season of SEASON_NAMES) {
-        if (cleanedQuery.includes(season.toLowerCase())) {
-            return season; // return proper season casing
-        }
+    const season = SEASON_NAMES.find(s =>
+        words.includes(s.toLowerCase())
+    );
+
+    return season || null;
+}
+function detectYear(query) {
+    if (!query) return null;
+
+    query = query.toLowerCase();
+
+    // Case 1: Full financial year (2025-2026)
+    let match = query.match(/\b(20\d{2})\s*[-–]\s*(20\d{2})\b/);
+    if (match) {
+        return `${match[1]}-${match[2]}`;
     }
 
-    // Check for partial/fuzzy match (e.g., "khari" → "kharif")
-    if (cleanedQuery.includes("khari")) return "kharif";
-    if (cleanedQuery.includes("rabi")) return "rabi";
-    if (cleanedQuery.includes("zaid")) return "zaid";
+    // Case 2: Short FY format (2025-26)
+    match = query.match(/\b(20\d{2})\s*[-–]\s*(\d{2})\b/);
+    if (match) {
+        return `${match[1]}-20${match[2]}`;
+    }
+
+    // Case 3: Single year (assume financial year)
+    match = query.match(/\b(20\d{2})\b/);
+    if (match) {
+        const startYear = parseInt(match[1], 10);
+        return `${startYear}-${startYear + 1}`;
+    }
 
     return null;
 }
 
-function detectYear(query) {
-    if (!query) return null;
-
-    const cleanedQuery = basicClean(query);
-
-    // Match years in formats like: 2022, 2023-24, 2023/24
-    const yearRegex = /\b(20\d{2})([-\/]?(\d{2})?)?\b/g;
-
-    const matches = [...cleanedQuery.matchAll(yearRegex)];
-
-    if (matches.length === 0) return null;
-
-    // Return first match
-    const match = matches[0];
-    if (match[2]) {
-        // If range exists (e.g., 2023-24)
-        const startYear = match[1];
-        const endYear = match[3] ? "20" + match[3] : null;
-        return endYear ? `${startYear}-${endYear}` : startYear;
-    }
-
-    return match[1]; // single year
-}
 
 function detectTopN(query) {
     if (!query) return null;
@@ -494,6 +387,71 @@ function detectOrder(query) {
     }
 
     return "DESC";
+}
+
+function detectIndicator(query) {
+
+    const q = normalizeQuery(query);
+
+    // Special rule
+    if (/\bunsurveyed\b|\bnot surveyed\b|\bunable to survey\b/.test(q)) {
+        return "unsurveyed_plots";
+    }
+
+    const qWords = q.split(" ");
+
+    const matches = [];
+
+    for (const key in INDICATORS) {
+
+        const indicator = INDICATORS[key];
+
+        const keywords = indicator?.keywords || [];
+
+        if (keywords.length === 0) continue;
+
+        let score = 0;
+        let strongMatch = false;
+
+        for (const kw of keywords) {
+
+            const kwNorm = normalizeQuery(kw);
+
+            // Strong phrase match
+            const pattern = new RegExp(`\\b${kwNorm}\\b`, "i");
+
+            if (pattern.test(q)) {
+                score += 5;
+                strongMatch = true;
+            }
+
+            // Word-level match
+            const kwWords = kwNorm.split(" ");
+
+            const matchedWords = kwWords.filter(w => qWords.includes(w));
+
+            score += matchedWords.length;
+        }
+
+        if (score > 0) {
+            matches.push({ key, score, strongMatch });
+        }
+    }
+
+    if (matches.length === 0) {
+        return null;
+    }
+
+    // Sort by score
+    matches.sort((a, b) => b.score - a.score);
+
+    const isComparison = /\b(compare|vs|versus|difference|between)\b/i.test(q);
+
+    if (isComparison) {
+        return matches.slice(0, 2).map(m => m.key);
+    }
+
+    return matches[0].key;
 }
 
 const COMPARISON_KEYWORDS = [
@@ -844,6 +802,53 @@ function preprocessQuery(query) {
     return cleaned;
 }
 
+// const STATE_TO_LGD = Object.fromEntries(
+//     Object.entries(LGD_TO_STATE).map(([lgd, name]) => [
+//         name.toLowerCase(),
+//         lgd
+//     ])
+// );
+
+// function detectStateFromQuery(query) {
+//     const lowerQuery = query.toLowerCase();
+
+//     for (const stateName in STATE_TO_LGD) {
+//         if (lowerQuery.includes(stateName?.toLowerCase())) {
+//             return {
+//                 level: "state",
+//                 state_name: stateName,
+//                 state_lgd_code: STATE_TO_LGD[stateName]
+//             };
+//         }
+//     }
+
+//     return null;
+// }
+
+// function detectStateFromQuery(query) {
+//     if (!query) return [];
+
+//     const lowerQuery = query.toLowerCase();
+//     const detectedStates = [];
+
+//     for (const stateName in STATE_TO_LGD) {
+//         const stateLower = stateName.toLowerCase();
+
+//         // Word boundary match (important!)
+//         const regex = new RegExp(`\\b${stateLower}\\b`, "i");
+
+//         if (regex.test(lowerQuery)) {
+//             detectedStates.push({
+//                 level: "state",
+//                 state_name: stateName,
+//                 state_lgd_code: STATE_TO_LGD[stateName]
+//             });
+//         }
+//     }
+
+//     return detectedStates;
+// }
+
 function escapeRegex(text) {
     return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -909,7 +914,6 @@ function detectGeographyFromQuery(query) {
 }
 
 export  {
-    detectCrop,
     classifyIntent,
     generateNarration,
     getConversationResponse,
